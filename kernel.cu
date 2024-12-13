@@ -17,7 +17,7 @@ using uc = unsigned char;
 #define o0(x) (S((x),7)^S((x),18)^((x)>>3))
 #define o1(x) (S((x),17)^S((x),19)^((x)>>10))
 
-__device__ const ui k[] = {
+const ui k[] = {
 	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
 	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
 	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -28,7 +28,7 @@ __device__ const ui k[] = {
 	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-__device__ ui H[8] = {
+ui H[8] = {
 	0x6a09e667,
 	0xbb67ae85,
 	0x3c6ef372,
@@ -42,52 +42,15 @@ __device__ ui H[8] = {
 __device__ uc* dat;
 __device__ ui* w;
 
-__global__ void block(ull num) {
+__global__ void block(ull num, uc* dat,  ui* w) {
 	ull start = (blockIdx.x * blockDim.x + threadIdx.x);//block_number
 	if (start >= num) return;
-	//block_number
-	printf("%d\n", start);
 	//转换:
-	printf("execute to 0\nand start*64=%d\n", start * 64);
-	for (ull t = start * 64; t <= start * 64 + 64; t++) printf("%02x\n", w[t]);
 	for (ull t = start * 64, i = 1, j = t; i <= 16; i++, t++, j += 4) {
-		printf("t=%lld i=%lld j=%lld\n", t, i, j);
-		ui abcd = (dat[j] << 24) /* | (dat[j + 1] << 16) | (dat[j + 2] << 8) | dat[j + 3]*/;
-		printf("finish\n");
+		w[t] = ((dat[j]) << 24) | (dat[j + 1] << 16) | (dat[j + 2] << 8) | dat[j + 3];
 	}
-	printf("execute to 1\n");
 	//扩充:
-	for (int t = start * 64 + 16; t < (start + 1) * 64; t++) w[t] = o1(w[t - 2]) + w[t - 7] + o0(w[t - 15]) + w[t - 16];
-	printf("execute to 2\n");
-	
-	/*ui a = H[0];
-	ui b = H[1];
-	ui c = H[2];
-	ui d = H[3];
-	ui e = H[4];
-	ui f = H[5];
-	ui g = H[6];
-	ui h = H[7];
-	for (int i = 0; i < 64; i++) {
-		ui T1 = h + S1(e) + Ch(e, f, g) + k[i] + w[i];
-		ui T2 = S0(a) + Ma(a, b, c);
-		h = g;
-		g = f;
-		f = e;
-		e = d + T1;
-		d = c;
-		c = b;
-		b = a;
-		a = T1 + T2;
-	}
-	H[0] += a;
-	H[1] += b;
-	H[2] += c;
-	H[3] += d;
-	H[4] += e;
-	H[5] += f;
-	H[6] += g;
-	H[7] += h;*/
+	for (ull t = start * 64 + 16; t < (start + 1) * 64; t++) w[t] = o1(w[t - 2]) + w[t - 7] + o0(w[t - 15]) + w[t - 16];
 	return;
 }
 
@@ -97,36 +60,44 @@ void sha256(const char* FileName, uc* out) {
 	ull siz = fin.tellg();//获取总长度
 	fin.seekg(0, ios::beg);//文件指针移到开头
 	uc* data = (uc*)malloc((siz / 64 + 1) * 64);
-	cout << "number=" << (siz / 64 + 1) * 64 << endl;
-	cudaMalloc(&dat, (siz / 64 + 1) * 64);//64byte
+	ull b = siz / 64 + 1 + (siz % 64 > 55);//block数量
+	cudaMalloc(&dat, (siz / 64 + 1) * 64);
 	cudaMemset(dat, 0, (siz / 64 + 1) * 64);
 	cudaMalloc(&w, (siz / 64 + 1) * 256ull);
 	cudaMemset(w, 0, (siz / 64 + 1) * 256ull);
 	memset(data, 0, (siz / 64 + 1) * 64);
-	ull cnt = 0,b = siz / 64 + (siz % 64 != 0);//block数量
-	while (fin.read((char*)data, 64) && ((siz % 64 == 0 && cnt <= b) || cnt < b)) {//循环处理512bit的块,将整个文件读入
-		cnt++;
-	}
+	fin.read((char*)data, siz);
 	//处理剩余
-	ui rest = fin.gcount();
+	ui rest = siz % 64;
 	fin.close();
-	data[cnt * 64 + rest] = 0x80;//填1
-	//for (ull i = cnt * 64 + rest; i < siz; i++) data[i] = 0;//填0
-
-	for (ull i = siz - 8, j = 0; i < siz; i++, j++) {//8byte(64bit) length information
+	data[(b - 1) * 64 + rest] = 0x80;//填1
+	for (ull i = (siz / 64 + 1) * 64 - 8, j = 0; i < (siz / 64 + 1) * 64; i++, j++)//8byte(64bit) length information
 		data[i] = (siz * 8) >> ((7 - j) * 8);
-		//此公式不用考虑剩余空间不够的问题(直接在数组后面写)
-	}
-	cudaMemcpyToSymbol(dat, data, (siz / 64 + 1) * 64);
-	block << <b / 1024ull + 1ull, 1024 >> > (b);
+	cudaMemcpy(dat, data, (siz / 64 + 1) * 64, cudaMemcpyHostToDevice);
+	block << <b / 1024ull + 1ull, 1024 >> > (b, dat, w);
 	cudaDeviceSynchronize();
-	ui h[8] = { 0 };
-	cudaMemcpyFromSymbol(h, H, 8 * sizeof(ui));
+	ui* ww = (ui*)malloc((siz / 64 + 1) * 256ull);
+	cudaMemcpy(ww, w, (siz / 64 + 1) * 256ull, cudaMemcpyDeviceToHost);
+	for (ull i = 0; i < b; i++) {//遍历每个块
+		ui a = H[0],b = H[1],c = H[2],d = H[3],e = H[4],f = H[5],g = H[6],h = H[7];
+		for (ull j = 0; j < 64; j++) {
+			ui T1 = h + S1(e) + Ch(e, f, g) + k[j] + ww[i * 64 + j];
+			ui T2 = S0(a) + Ma(a, b, c);
+			h = g;
+			g = f;
+			f = e;
+			e = d + T1;
+			d = c;
+			c = b;
+			b = a;
+			a = T1 + T2;
+		}
+		H[0] += a,H[1] += b,H[2] += c,H[3] += d,H[4] += e,H[5] += f,H[6] += g,H[7] += h;
+	}
 	for (int i = 0, j = 0; i < 32; i++, j += 8) {
 		if (j == 32) j = 0;
-		out[i] = swap32(h[i / 4]) >> j;
+		out[i] = swap32(H[i / 4]) >> j;
 	}
-	cout << "size=" << siz << endl;
 	return;
 }
 
